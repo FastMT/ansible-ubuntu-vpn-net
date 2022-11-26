@@ -1,0 +1,145 @@
+#################################################################################################################
+# Find all VPN hosts
+#
+
+- name: Clear vpn_hosts variable
+  set_fact:
+    vpn_net_hosts: []
+
+- name: Find all hosts with sid defined
+  set_fact:
+    vpn_net_hosts: "{{ vpn_net_hosts + [item] }}"
+  when: 
+    - hostvars[item]['sid'] is defined
+  loop: "{{ groups['all'] }}"
+  run_once: yes
+
+- debug:
+    var: vpn_net_hosts
+  run_once: yes
+
+#################################################################################################################
+# Install packages
+#
+
+- name: Install wireguard-tools
+  apt:
+    state: latest
+    pkg:
+    - wireguard-tools
+  become: yes
+
+#################################################################################################################
+# Generate WireGuard private key
+#
+
+
+- name: Break script if variable sid is empty
+  fail:
+    msg: sid is not defined
+  when: sid | default("") == ""
+
+- name: Create WireGuard key if it does not exist
+  copy:
+    content: "{{ a | wg_genkey }}"
+    dest: "/etc/wireguard/wg.key"
+    force: no
+  become: yes
+
+- name: Read /etc/wireguard/wg.key
+  ansible.builtin.slurp:
+    src: /etc/wireguard/wg.key
+  become: yes
+  register: wg_key_read
+
+- name: Read /etc/wireguard/wg.key into wg_key variable
+  set_fact:
+    wg_key: "{{ wg_key_read['content'] | b64decode | trim }}"
+  become: yes
+
+- name: Break script if variable wg_key is empty
+  fail:
+    msg: Cannot read file /etc/wireguard/wg.key
+  when: wg_key | default("") == ""
+
+#################################################################################################################
+# Generate firewall rule for WireGuard interface
+#
+- name: "vpn-net : create firewall rule for wg4444 interface"
+  iptables:
+    chain: INPUT
+    in_interface: "wg4444"
+    jump: ACCEPT
+    comment: "Allow all on wg4444"
+  become: yes
+  register: iptables_wg4444
+
+- name: "vpn-net : Allow WireGuard UDP tunnels"
+  iptables:
+    chain: INPUT
+    source: "{{ hostvars[item]['ansible_host'] }}"
+    protocol: udp
+    destination_port: "4444"
+    jump: ACCEPT
+    comment: "Allow WireGuard UDP 4444 from {{item}}"
+  become: yes
+  loop: "{{ vpn_net_hosts }}"
+  when: item != inventory_hostname
+  register: iptables_udp
+
+- name: Save iptables
+  shell: |
+    iptables-save | grep -v 'TEMP ' | grep -v 'LIBVIRT_' \
+    | grep -v -i 'docker' | grep -v 'A FORWARD ' \
+    | grep -v 'ufw-' >/etc/iptables/rules.v4
+  become: yes
+  check_mode: no
+  when: iptables_wg4444.changed or iptables_udp.changed
+
+#################################################################################################################
+# WireGuard config file
+#
+
+- name: "vpn-net : Create Wireguard peer config entry for wg4444 tunnel"
+  set_fact:
+    wg_peers: |
+      {{ wg_peers | default('')}}
+      [Peer]
+      # {{ item }}
+      Publickey = {{ hostvars[(item)]['wg_key'] | wg_pubkey }}
+      AllowedIPs = {{vpn_network_prefix}}.0.{{ hostvars[item]['sid'] }}/32{{ hostvars[(item)]['kvm_enabled']|default(false)| ternary (','+vpn_network_prefix+'.10'+hostvars[item]['sid']|string+'.0/24,'+vpn_network_prefix+'.'+hostvars[item]['sid']|string+'.0/24','') }}{{ (hostvars[(item)]['vpn_network_static_routes'] | default('') | length >0) | ternary (','+hostvars[(item)]['vpn_network_static_routes'] | default('') | join(','),'') }}
+      Endpoint = {{ hostvars[item]['ansible_host'] }}:4444
+      PersistentKeepalive = 25
+  loop: "{{ vpn_net_hosts }}"
+  when: item != inventory_hostname
+
+- name: "vpn-net : Deploy tunnel config"
+  copy: 
+    content: |
+      # WireGuard tunnels to servers in cluster 
+
+      [Interface]
+      Address = {{vpn_network_prefix}}.0.{{ sid }}/24
+      PrivateKey = {{ wg_key }}
+      ListenPort = 4444
+
+      {{ wg_peers | default ('')}}
+    dest: "/etc/wireguard/wg4444.conf"
+  become: yes
+  register: wgconf
+
+- name: "vpn-net : wg4444 - Start tunnel service"
+  service:
+    name: wg-quick@wg4444
+    state: started
+    enabled: yes 
+  become: yes
+  ignore_errors: yes
+
+- name: "vpn-net : wg4444 - Restart tunnel if required"
+  service:
+    name: wg-quick@wg4444
+    state: restarted
+  when: wgconf.changed
+  become: yes
+  ignore_errors: yes
