@@ -6,7 +6,7 @@ Ansible role to create VPN network betweeen linux (Ubuntu) servers
 Create requirements.yml file
 
 ```
-# Include ubuntu-common role
+# Include ubuntu-vpn-net role
 - src: https://github.com/FastMT/ansible-ubuntu-vpn-net.git
   name: ubuntu-vpn-net
   version: "v1.0.0"
