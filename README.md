@@ -9,7 +9,7 @@ Create requirements.yml file
 # Include ubuntu-vpn-net role
 - src: https://github.com/FastMT/ansible-ubuntu-vpn-net.git
   name: ubuntu-vpn-net
-  version: "v1.0.0"
+  version: "v1.0.1"
 ```
 
 Install external module into ~/.ansible/roles folder

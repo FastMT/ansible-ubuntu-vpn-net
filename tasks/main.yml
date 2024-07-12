@@ -1,4 +1,25 @@
 #################################################################################################################
+# Check if Wireguard installed on local host to make filter works
+#
+
+- name: check if wireguard-tools installed on local system
+  command: "wg --version"
+  register: wg_installed
+  changed_when: false
+  failed_when: false
+  delegate_to: localhost
+  run_once: true
+
+- name: Break script if wireguard-tools is not installed on local system
+  meta: end_play
+  when: wg_installed.rc != 0
+
+- name: Display WireGuard version
+  debug:
+    var: wg_installed.stdout
+  run_once: true
+
+#################################################################################################################
 # Find all VPN hosts
 #
 
@@ -12,11 +33,11 @@
   when: 
     - hostvars[item]['sid'] is defined
   loop: "{{ groups['all'] }}"
-  run_once: yes
+  run_once: true
 
 - debug:
     var: vpn_net_hosts
-  run_once: yes
+  run_once: true
 
 #################################################################################################################
 # Install packages
@@ -27,7 +48,7 @@
     state: latest
     pkg:
     - wireguard-tools
-  become: yes
+  become: true
 
 #################################################################################################################
 # Generate WireGuard private key
@@ -43,19 +64,19 @@
   copy:
     content: "{{ a | wg_genkey }}"
     dest: "/etc/wireguard/wg.key"
-    force: no
-  become: yes
+    force: false
+  become: true
 
 - name: Read /etc/wireguard/wg.key
   ansible.builtin.slurp:
     src: /etc/wireguard/wg.key
-  become: yes
+  become: true
   register: wg_key_read
 
 - name: Read /etc/wireguard/wg.key into wg_key variable
   set_fact:
     wg_key: "{{ wg_key_read['content'] | b64decode | trim }}"
-  become: yes
+  become: true
 
 - name: Break script if variable wg_key is empty
   fail:
@@ -71,7 +92,7 @@
     in_interface: "{{ ubuntu_vpn_net_interface }}"
     jump: ACCEPT
     comment: "Allow all on {{ ubuntu_vpn_net_interface }}"
-  become: yes
+  become: true
   register: iptables_wgnet
 
 - name: "vpn-net : Allow WireGuard UDP tunnels"
@@ -82,7 +103,7 @@
     destination_port: "{{ ubuntu_vpn_net_port }}"
     jump: ACCEPT
     comment: "Allow WireGuard UDP {{ ubuntu_vpn_net_interface }} from {{item}}"
-  become: yes
+  become: true
   loop: "{{ vpn_net_hosts }}"
   when: item != inventory_hostname
   register: iptables_udp
@@ -92,7 +113,7 @@
     iptables-save | grep -v 'TEMP ' | grep -v 'LIBVIRT_' \
     | grep -v -i 'docker' | grep -v 'A FORWARD ' \
     | grep -v 'ufw-' >/etc/iptables/rules.v4
-  become: yes
+  become: true
   check_mode: no
   when: iptables_wgnet.changed or iptables_udp.changed
 
@@ -125,21 +146,21 @@
 
       {{ wg_peers | default ('')}}
     dest: "/etc/wireguard/{{ ubuntu_vpn_net_interface }}.conf"
-  become: yes
+  become: true
   register: wgconf
 
 - name: "vpn-net : wgnet - Start tunnel service"
   service:
     name: "wg-quick@{{ ubuntu_vpn_net_interface }}"
     state: started
-    enabled: yes 
-  become: yes
-  ignore_errors: yes
+    enabled: true 
+  become: true
+  ignore_errors: true
 
 - name: "vpn-net : wgnet - Restart tunnel if required"
   service:
     name: wg-quick@wgnet
     state: restarted
   when: wgconf.changed
-  become: yes
-  ignore_errors: yes
+  become: true
+  ignore_errors: true
